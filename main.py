@@ -25,15 +25,17 @@ stabilizer = GestureStabilizer(
 )
 mouse = MouseController(
     smoothing=config.MOUSE_SMOOTHING,
+    pinch_smoothing=config.MOUSE_PINCH_SMOOTHING,
     click_threshold=config.MOUSE_CLICK_THRESHOLD,
     gain_x=config.MOUSE_GAIN_X,
     gain_y=config.MOUSE_GAIN_Y,
+    drag_hold_time=config.PINCH_DRAG_HOLD_TIME,
 )
 mode_controller = ModeController(default_mode=config.DEFAULT_MODE)
 
 cap = cv2.VideoCapture(config.CAMERA_INDEX)
 last_action_time = 0
-
+outside_box_start_time = None
 
 while True:
     success, frame = cap.read()
@@ -63,8 +65,11 @@ while True:
                     and current_time - last_action_time > config.COOLDOWN_SECONDS
                 ):
                     mode_controller.switch_mode(config.MODE_MOUSE)
+                    mouse.reset()
+                    stabilizer.reset()
                     actions.set_status("Action: Switched to MOUSE mode")
                     last_action_time = current_time
+                    outside_box_start_time = None
 
                 elif (
                     detected_gesture == "FIST"
@@ -77,8 +82,35 @@ while True:
                     actions.set_status("Action: Gesture mode ready")
 
             elif current_mode == config.MODE_MOUSE:
-                mouse.move_cursor_from_landmarks(hand_landmarks)
-                mouse_status = mouse.handle_pinch_click(hand_landmarks)
+                in_control_region = mouse.is_hand_in_control_region(
+                    hand_landmarks)
+
+                if in_control_region:
+                    outside_box_start_time = None
+                    mouse.move_cursor_from_landmarks(hand_landmarks)
+                    mouse_status = mouse.handle_pinch_click(hand_landmarks)
+                else:
+                    if config.AUTO_SWITCH_TO_GESTURE_ON_OUTSIDE:
+                        if outside_box_start_time is None:
+                            outside_box_start_time = current_time
+                            mouse_status = f"Mouse: Outside box ({config.OUTSIDE_BOX_TIMEOUT:.1f}s)"
+                        else:
+                            elapsed = current_time - outside_box_start_time
+                            remaining = max(
+                                0, config.OUTSIDE_BOX_TIMEOUT - elapsed)
+                            mouse_status = f"Mouse: Outside box ({remaining:.1f}s)"
+
+                            if elapsed >= config.OUTSIDE_BOX_TIMEOUT:
+                                mode_controller.switch_mode(
+                                    config.MODE_GESTURE)
+                                mouse.reset()
+                                stabilizer.reset()
+                                actions.set_status(
+                                    "Action: Auto-switched to GESTURE mode")
+                                last_action_time = current_time
+                                outside_box_start_time = None
+                    else:
+                        mouse_status = "Mouse: Outside control region"
 
                 if (
                     detected_gesture == "OPEN_PALM"
@@ -86,11 +118,39 @@ while True:
                 ):
                     mode_controller.switch_mode(config.MODE_GESTURE)
                     mouse.reset()
+                    stabilizer.reset()
                     actions.set_status("Action: Switched to GESTURE mode")
                     last_action_time = current_time
+                    outside_box_start_time = None
     else:
+        current_time = time.time()
+        current_mode = mode_controller.get_mode()
+
         stabilizer.reset()
-        mouse.reset()
+
+        if current_mode == config.MODE_MOUSE:
+            if config.AUTO_SWITCH_TO_GESTURE_ON_OUTSIDE:
+                if outside_box_start_time is None:
+                    outside_box_start_time = current_time
+                    mouse_status = f"Mouse: No hand / outside box ({config.OUTSIDE_BOX_TIMEOUT:.1f}s)"
+                else:
+                    elapsed = current_time - outside_box_start_time
+                    remaining = max(0, config.OUTSIDE_BOX_TIMEOUT - elapsed)
+                    mouse_status = f"Mouse: No hand / outside box ({remaining:.1f}s)"
+
+                    if elapsed >= config.OUTSIDE_BOX_TIMEOUT:
+                        mode_controller.switch_mode(config.MODE_GESTURE)
+                        mouse.reset()
+                        stabilizer.reset()
+                        actions.set_status(
+                            "Action: Auto-switched to GESTURE mode")
+                        last_action_time = current_time
+                        outside_box_start_time = None
+            else:
+                mouse.reset()
+        else:
+            mouse.reset()
+            outside_box_start_time = None
 
     draw_status(
         frame,

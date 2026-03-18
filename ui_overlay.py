@@ -2,13 +2,26 @@ import cv2
 import config
 
 
-def draw_status(frame, detected_gesture, last_action_text, mode_text, mouse_status=None):
-    gesture_color = config.COLOR_GREEN
+def draw_control_region(frame):
+    if not config.SHOW_CONTROL_REGION:
+        return
 
-    if detected_gesture == "UNSTABLE":
-        gesture_color = config.COLOR_RED
-    elif detected_gesture in ["STABILIZING", "HOLDING"]:
-        gesture_color = (0, 165, 255)  # orange
+    height, width, _ = frame.shape
+
+    x1 = int(width * config.CONTROL_REGION_MIN_X)
+    y1 = int(height * config.CONTROL_REGION_MIN_Y)
+    x2 = int(width * config.CONTROL_REGION_MAX_X)
+    y2 = int(height * config.CONTROL_REGION_MAX_Y)
+
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+
+def draw_status(frame, detected_gesture, last_action_text, mode_text, mouse_status=None):
+    draw_control_region(frame)
+
+    gesture_color = (
+        config.COLOR_RED if detected_gesture == "UNSTABLE" else config.COLOR_GREEN
+    )
 
     cv2.putText(
         frame,
