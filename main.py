@@ -60,13 +60,20 @@ while True:
             current_mode = mode_controller.get_mode()
 
             if current_mode == config.MODE_GESTURE:
-                if (
+                volume_pinch_active = actions.is_volume_pinch_active(
+                    hand_landmarks)
+
+                if volume_pinch_active or actions.volume_pinching:
+                    actions.handle_volume_pinch(hand_landmarks)
+
+                elif (
                     detected_gesture == "PEACE"
                     and current_time - last_action_time > config.COOLDOWN_SECONDS
                 ):
                     mode_controller.switch_mode(config.MODE_MOUSE)
                     mouse.reset()
                     stabilizer.reset()
+                    actions.reset_volume_pinch()
                     actions.set_status("Action: Switched to MOUSE mode")
                     last_action_time = current_time
                     outside_box_start_time = None
@@ -147,6 +154,7 @@ while True:
         current_mode = mode_controller.get_mode()
 
         stabilizer.reset()
+        actions.reset_volume_pinch()
 
         if current_mode == config.MODE_MOUSE:
             if config.AUTO_SWITCH_TO_GESTURE_ON_OUTSIDE:
