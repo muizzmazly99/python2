@@ -3,7 +3,7 @@ import cv2
 
 import config
 from hand_tracker import HandTracker
-from gesture_logic import detect_gesture
+from gesture_logic import detect_gesture, is_thumbs_up, is_scroll_gesture
 from action_controller import ActionController
 from gesture_stabilizer import GestureStabilizer
 from mouse_controller import MouseController
@@ -87,8 +87,28 @@ while True:
 
                 if in_control_region:
                     outside_box_start_time = None
+
+                    # Always move cursor first in normal mouse interactions
                     mouse.move_cursor_from_landmarks(hand_landmarks)
-                    mouse_status = mouse.handle_pinch_click(hand_landmarks)
+
+                    # Pinch gets highest priority, including release handling
+                    pinch_active = mouse.is_pinch_active(hand_landmarks)
+                    should_handle_pinch = pinch_active or mouse.pinching or mouse.dragging
+
+                    if should_handle_pinch:
+                        mouse.reset_scroll()
+                        mouse_status = mouse.handle_pinch_click(hand_landmarks)
+
+                    elif is_scroll_gesture(hand_landmarks):
+                        mouse_status = mouse.handle_scroll(hand_landmarks)
+
+                    elif is_thumbs_up(hand_landmarks):
+                        mouse.reset_scroll()
+                        mouse_status = mouse.handle_right_click()
+
+                    else:
+                        mouse.reset_scroll()
+                        mouse_status = "Mouse: Moving"
                 else:
                     if config.AUTO_SWITCH_TO_GESTURE_ON_OUTSIDE:
                         if outside_box_start_time is None:

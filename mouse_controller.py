@@ -33,6 +33,12 @@ class MouseController:
         self.dragging = False
         self.release_start_time = None
 
+        self.last_right_click_time = 0
+        self.prev_scroll_y = None
+        self.scroll_accumulator = 0.0
+        self.scroll_smoothing = 0.25
+        self.scroll_velocity = 0.0
+
     def _apply_axis_inversion(self, x, y):
         if config.INVERT_X:
             x = 1 - x
@@ -49,15 +55,6 @@ class MouseController:
         return (value - in_min) / (in_max - in_min) * (out_max - out_min) + out_min
 
     def _get_pointer_anchor(self, hand_landmarks):
-        """
-        Build a more stable pointer anchor using a weighted blend of:
-        - index tip (8)
-        - index PIP (6)
-        - index MCP (5)
-
-        This is more stable than tracking the fingertip alone,
-        especially during pinch gestures.
-        """
         index_tip = hand_landmarks.landmark[8]
         index_pip = hand_landmarks.landmark[6]
         index_mcp = hand_landmarks.landmark[5]
@@ -78,7 +75,6 @@ class MouseController:
     def move_cursor_from_landmarks(self, hand_landmarks):
         x, y = self._get_pointer_anchor(hand_landmarks)
 
-        # Clamp to control region
         x = self._clamp(
             x,
             config.CONTROL_REGION_MIN_X,
@@ -90,7 +86,6 @@ class MouseController:
             config.CONTROL_REGION_MAX_Y,
         )
 
-        # Remap control region to full screen space
         x = self._remap(
             x,
             config.CONTROL_REGION_MIN_X,
@@ -106,7 +101,6 @@ class MouseController:
             1.0,
         )
 
-        # Optional center gain expansion
         center_x = 0.5
         center_y = 0.5
 
@@ -136,12 +130,6 @@ class MouseController:
         self.prev_y = smooth_y
 
     def handle_pinch_click(self, hand_landmarks):
-        """
-        Behavior:
-        - short pinch -> click
-        - hold pinch -> drag
-        - release after stable unpinch -> drop
-        """
         thumb_tip = hand_landmarks.landmark[4]
         index_tip = hand_landmarks.landmark[8]
 
@@ -150,17 +138,19 @@ class MouseController:
             (thumb_tip.y - index_tip.y) ** 2
         )
 
-        is_pinched = distance < self.click_threshold
         current_time = time.time()
 
-        # Pinch just started
+        if self.pinching:
+            is_pinched = distance < config.PINCH_RELEASE_THRESHOLD
+        else:
+            is_pinched = distance < config.PINCH_START_THRESHOLD
+
         if is_pinched and not self.pinching:
             self.pinching = True
             self.pinch_start_time = current_time
             self.release_start_time = None
             return "Mouse: Pinch started"
 
-        # Pinch is active
         if is_pinched and self.pinching:
             self.release_start_time = None
             pinch_duration = current_time - self.pinch_start_time
@@ -175,7 +165,6 @@ class MouseController:
 
             return "Mouse: Holding pinch"
 
-        # Pinch temporarily lost
         if not is_pinched and self.pinching:
             if self.release_start_time is None:
                 self.release_start_time = current_time
@@ -183,7 +172,6 @@ class MouseController:
 
             release_duration = current_time - self.release_start_time
 
-            # Ignore brief tracking glitches
             if release_duration < config.PINCH_RELEASE_GRACE_TIME:
                 if self.dragging:
                     return "Mouse: Dragging"
@@ -191,7 +179,6 @@ class MouseController:
 
             pinch_duration = current_time - self.pinch_start_time
 
-            # End drag
             if self.dragging:
                 pyautogui.mouseUp()
                 self.dragging = False
@@ -200,7 +187,6 @@ class MouseController:
                 self.release_start_time = None
                 return "Mouse: Drop"
 
-            # Short pinch = click
             if pinch_duration < self.drag_hold_time:
                 pyautogui.click()
 
@@ -210,6 +196,66 @@ class MouseController:
             return "Mouse: Click"
 
         return "Mouse: Moving"
+
+    def handle_right_click(self):
+        current_time = time.time()
+        if current_time - self.last_right_click_time >= config.RIGHT_CLICK_COOLDOWN:
+            pyautogui.rightClick()
+            self.last_right_click_time = current_time
+            return "Mouse: Right Click"
+        return "Mouse: Right Click cooldown"
+
+    def handle_scroll(self, hand_landmarks):
+        """
+        Continuous smooth scrolling using movement accumulation.
+        Small hand movement builds up gradually into scroll steps.
+        """
+        index_tip = hand_landmarks.landmark[8]
+        index_pip = hand_landmarks.landmark[6]
+        middle_tip = hand_landmarks.landmark[12]
+
+        scroll_y = (
+            index_tip.y * 0.4 +
+            index_pip.y * 0.3 +
+            middle_tip.y * 0.3
+        )
+
+        _, y = self._apply_axis_inversion(index_tip.x, scroll_y)
+
+        if self.prev_scroll_y is None:
+            self.prev_scroll_y = y
+            self.scroll_velocity = 0.0
+            self.scroll_accumulator = 0.0
+            return "Mouse: Scroll ready"
+
+        delta_y = y - self.prev_scroll_y
+
+        if abs(delta_y) < config.SCROLL_DEADZONE:
+            delta_y = 0.0
+
+        target_velocity = (-delta_y) * config.SCROLL_SENSITIVITY
+        self.scroll_velocity += (target_velocity -
+                                 self.scroll_velocity) * config.SCROLL_SMOOTHING
+
+        self.scroll_accumulator += self.scroll_velocity
+
+        scroll_step = int(self.scroll_accumulator)
+
+        if scroll_step != 0:
+            scroll_step = max(
+                -config.SCROLL_MAX_STEP,
+                min(config.SCROLL_MAX_STEP, scroll_step)
+            )
+            pyautogui.scroll(scroll_step)
+            self.scroll_accumulator -= scroll_step
+
+        self.prev_scroll_y = y
+        return f"Mouse: Scrolling ({scroll_step if scroll_step != 0 else 0})"
+
+    def reset_scroll(self):
+        self.prev_scroll_y = None
+        self.scroll_velocity = 0.0
+        self.scroll_accumulator = 0.0
 
     def reset(self):
         if self.dragging:
@@ -221,13 +267,9 @@ class MouseController:
         self.pinch_start_time = None
         self.release_start_time = None
         self.dragging = False
+        self.prev_scroll_y = None
 
     def is_hand_in_control_region(self, hand_landmarks):
-        """
-        Use raw index fingertip for region presence detection.
-        This is better for checking whether the hand is actually
-        inside the visible control box.
-        """
         index_tip = hand_landmarks.landmark[8]
         x, y = self._apply_axis_inversion(index_tip.x, index_tip.y)
 
@@ -238,3 +280,22 @@ class MouseController:
 
     def get_pointer_anchor_normalized(self, hand_landmarks):
         return self._get_pointer_anchor(hand_landmarks)
+
+    def is_pinch_active(self, hand_landmarks):
+        from gesture_logic import is_thumbs_up
+
+        # Block pinch if thumbs up
+        if is_thumbs_up(hand_landmarks):
+            return False
+
+        thumb_tip = hand_landmarks.landmark[4]
+        index_tip = hand_landmarks.landmark[8]
+
+        distance = math.sqrt(
+            (thumb_tip.x - index_tip.x) ** 2 +
+            (thumb_tip.y - index_tip.y) ** 2
+        )
+
+        if self.pinching:
+            return distance < config.PINCH_RELEASE_THRESHOLD
+        return distance < config.PINCH_START_THRESHOLD

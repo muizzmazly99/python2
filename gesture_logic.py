@@ -55,3 +55,52 @@ def detect_gesture(hand_landmarks):
         return "PEACE"
 
     return "UNKNOWN"
+
+
+def is_thumbs_up(hand_landmarks):
+    landmarks = hand_landmarks.landmark
+    _, finger_states = count_fingers(hand_landmarks)
+
+    thumb_tip = landmarks[4]
+    thumb_ip = landmarks[3]
+    index_tip = landmarks[8]
+    wrist = landmarks[0]
+
+    # Basic finger state pattern
+    basic_shape = (
+        finger_states["thumb"]
+        and not finger_states["index"]
+        and not finger_states["middle"]
+        and not finger_states["ring"]
+        and not finger_states["pinky"]
+    )
+
+    if not basic_shape:
+        return False
+
+    # Thumb should be clearly extended away from index
+    thumb_index_distance = ((thumb_tip.x - index_tip.x)
+                            ** 2 + (thumb_tip.y - index_tip.y) ** 2) ** 0.5
+    if thumb_index_distance < 0.12:
+        return False
+
+    # Thumb should also be above the wrist for a "thumbs up" feel
+    if thumb_tip.y >= wrist.y:
+        return False
+
+    # Thumb tip should be above thumb joint
+    if thumb_tip.y >= thumb_ip.y:
+        return False
+
+    return True
+
+
+def is_scroll_gesture(hand_landmarks):
+    _, finger_states = count_fingers(hand_landmarks)
+    return (
+        not finger_states["thumb"]
+        and finger_states["index"]
+        and finger_states["middle"]
+        and not finger_states["ring"]
+        and not finger_states["pinky"]
+    )
